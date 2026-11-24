@@ -1,0 +1,584 @@
+From dcefefa0e89cdf2165d95760adb2a7a8cbce0d2c Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Wed, 18 Nov 2026 19:27:03 +0000
+Subject: [PATCH] Add built-in Media3 video player (MKV/WebM, subtitles,
+ resume)
+
+---
+ gradle/libs.versions.toml                     |   7 +
+ wearable/build.gradle.kts                     |   2 +
+ wearable/src/main/AndroidManifest.xml         |  19 +
+ .../common/viewers/VideoPlayerActivity.kt     | 370 ++++++++++++++++++
+ .../data/FileInteractionHandlerImpl.kt        |  36 ++
+ wearable/src/main/res/values-ru/strings.xml   |   8 +
+ .../src/main/res/values-zh-rCN/strings.xml    |   8 +
+ wearable/src/main/res/values/strings.xml      |   8 +
+ 8 files changed, 458 insertions(+)
+ create mode 100644 wearable/src/main/java/com/dertefter/wearfiles/common/viewers/VideoPlayerActivity.kt
+
+diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
+index a2b6740..2a6d51d 100644
+--- a/gradle/libs.versions.toml
++++ b/gradle/libs.versions.toml
+@@ -42,6 +42,9 @@ coreKtx = "1.19.1"
+ lifecycleRuntimeKtx = "2.11.0"
+ playServicesWearable = "20.0.1"
+ 
++# Media3 (video player)
++media3 = "1.10.1"
++
+ [libraries]
+ # Compose (BOM)
+ 
+@@ -75,6 +78,10 @@ horologist-compose-layout = { module = "com.google.android.horologist:horologist
+ androidx-wear-remote-interactions = { module = "androidx.wear:wear-remote-interactions", version.ref = "wearRemoteInteractions" }
+ play-services-wearable = { module = "com.google.android.gms:play-services-wearable", version.ref = "playServicesWearable" }
+ 
++# Media3
++media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }
++media3-ui = { module = "androidx.media3:media3-ui", version.ref = "media3" }
++
+ # Hilt
+ hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
+ hilt-compiler = { module = "com.google.dagger:hilt-compiler", version.ref = "hilt" }
+diff --git a/wearable/build.gradle.kts b/wearable/build.gradle.kts
+index 00721f9..afc068c 100644
+--- a/wearable/build.gradle.kts
++++ b/wearable/build.gradle.kts
+@@ -114,5 +114,7 @@ dependencies {
+     implementation(libs.androidx.datastore.preferences)
+     implementation(libs.gson)
+     implementation(libs.androidx.core.splashscreen)
++    implementation(libs.media3.exoplayer)
++    implementation(libs.media3.ui)
+     implementation(libs.oss.licenses.droibit)
+ }
+diff --git a/wearable/src/main/AndroidManifest.xml b/wearable/src/main/AndroidManifest.xml
+index 8e908e7..fa1172c 100644
+--- a/wearable/src/main/AndroidManifest.xml
++++ b/wearable/src/main/AndroidManifest.xml
+@@ -117,6 +117,25 @@
+         </activity>
+ 
+ 
++        <activity
++            android:name=".common.viewers.VideoPlayerActivity"
++            android:label="@string/launch_video_player"
++            android:exported="true"
++            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
++            android:taskAffinity="">
++            <intent-filter>
++                <action android:name="android.intent.action.VIEW" />
++
++                <category android:name="android.intent.category.DEFAULT" />
++                <category android:name="android.intent.category.BROWSABLE" />
++
++                <data android:scheme="file" />
++                <data android:scheme="content" />
++                <data android:mimeType="video/*" />
++                <data android:mimeType="application/x-matroska" />
++            </intent-filter>
++        </activity>
++
+         <provider
+             android:name="androidx.core.content.FileProvider"
+             android:authorities="${applicationId}.provider"
+diff --git a/wearable/src/main/java/com/dertefter/wearfiles/common/viewers/VideoPlayerActivity.kt b/wearable/src/main/java/com/dertefter/wearfiles/common/viewers/VideoPlayerActivity.kt
+new file mode 100644
+index 0000000..065c7b0
+--- /dev/null
++++ b/wearable/src/main/java/com/dertefter/wearfiles/common/viewers/VideoPlayerActivity.kt
+@@ -0,0 +1,370 @@
++package com.dertefter.wearfiles.common.viewers
++
++import android.content.Context
++import android.graphics.Color
++import android.graphics.drawable.GradientDrawable
++import android.net.Uri
++import android.os.Bundle
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.view.WindowManager
++import android.widget.FrameLayout
++import android.widget.LinearLayout
++import android.widget.TextView
++import android.widget.Toast
++import androidx.activity.ComponentActivity
++import androidx.media3.common.C
++import androidx.media3.common.Format
++import androidx.media3.common.MediaItem
++import androidx.media3.common.MimeTypes
++import androidx.media3.common.PlaybackException
++import androidx.media3.common.Player
++import androidx.media3.common.TrackSelectionOverride
++import androidx.media3.common.Tracks
++import androidx.media3.common.util.UnstableApi
++import androidx.media3.exoplayer.DefaultRenderersFactory
++import androidx.media3.exoplayer.ExoPlayer
++import androidx.media3.ui.AspectRatioFrameLayout
++import androidx.media3.ui.PlayerView
++import com.dertefter.wearfiles.R
++import java.io.File
++import java.util.Locale
++
++/**
++ * Built-in video player for the watch. Plays MKV / WebM / MP4 etc. with Media3 ExoPlayer,
++ * so we no longer depend on a system app that can open the file.
++ *
++ * Launch with an explicit intent: data = video uri, optional EXTRA_PATH = absolute file path
++ * (used to find sidecar subtitle files like "Movie.srt" next to "Movie.mkv").
++ */
++@OptIn(UnstableApi::class)
++class VideoPlayerActivity : ComponentActivity() {
++
++    private var player: ExoPlayer? = null
++    private lateinit var playerView: PlayerView
++    private lateinit var buttonRow: LinearLayout
++    private lateinit var statusText: TextView
++
++    private var videoUri: Uri? = null
++    private var videoPath: String? = null
++    private var sourceKey: String = ""
++    private var codecWarningShown = false
++
++    override fun onCreate(savedInstanceState: Bundle?) {
++        super.onCreate(savedInstanceState)
++
++        val uri = intent?.data
++        if (uri == null) {
++            finish()
++            return
++        }
++        videoUri = uri
++        videoPath = intent.getStringExtra(EXTRA_PATH)
++        sourceKey = videoPath ?: uri.toString()
++
++        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
++        setContentView(buildLayout())
++    }
++
++    override fun onStart() {
++        super.onStart()
++        if (videoUri != null) initPlayer()
++    }
++
++    override fun onStop() {
++        super.onStop()
++        savePosition()
++        releasePlayer()
++    }
++
++    // ---------------------------------------------------------------- UI
++
++    private fun buildLayout(): View {
++        val root = FrameLayout(this).apply {
++            setBackgroundColor(Color.BLACK)
++            layoutParams = ViewGroup.LayoutParams(
++                ViewGroup.LayoutParams.MATCH_PARENT,
++                ViewGroup.LayoutParams.MATCH_PARENT
++            )
++        }
++
++        playerView = PlayerView(this).apply {
++            useController = true
++            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
++            controllerShowTimeoutMs = 4000
++            setShowNextButton(false)
++            setShowPreviousButton(false)
++            subtitleView?.setFractionalTextSize(0.065f)
++            setControllerVisibilityListener(
++                PlayerView.ControllerVisibilityListener { visibility ->
++                    if (::buttonRow.isInitialized) {
++                        buttonRow.visibility = if (visibility == View.VISIBLE) View.VISIBLE else View.GONE
++                    }
++                }
++            )
++        }
++        root.addView(
++            playerView,
++            FrameLayout.LayoutParams(
++                FrameLayout.LayoutParams.MATCH_PARENT,
++                FrameLayout.LayoutParams.MATCH_PARENT
++            )
++        )
++
++        // Two small buttons at the top (round screens are narrow at the very top, so keep a margin)
++        buttonRow = LinearLayout(this).apply {
++            orientation = LinearLayout.HORIZONTAL
++            gravity = Gravity.CENTER
++            visibility = View.GONE
++        }
++        buttonRow.addView(makeButton("CC") { cycleSubtitles() })
++        buttonRow.addView(makeButton("\u266A") { cycleAudio() })
++        root.addView(
++            buttonRow,
++            FrameLayout.LayoutParams(
++                FrameLayout.LayoutParams.WRAP_CONTENT,
++                FrameLayout.LayoutParams.WRAP_CONTENT,
++                Gravity.TOP or Gravity.CENTER_HORIZONTAL
++            ).apply { topMargin = dp(22) }
++        )
++
++        statusText = TextView(this).apply {
++            setTextColor(Color.WHITE)
++            textSize = 13f
++            gravity = Gravity.CENTER
++            setPadding(dp(28), dp(20), dp(28), dp(20))
++            visibility = View.GONE
++        }
++        root.addView(
++            statusText,
++            FrameLayout.LayoutParams(
++                FrameLayout.LayoutParams.MATCH_PARENT,
++                FrameLayout.LayoutParams.WRAP_CONTENT,
++                Gravity.CENTER
++            )
++        )
++
++        return root
++    }
++
++    private fun makeButton(label: String, onClick: () -> Unit): TextView =
++        TextView(this).apply {
++            text = label
++            setTextColor(Color.WHITE)
++            textSize = 14f
++            gravity = Gravity.CENTER
++            background = GradientDrawable().apply {
++                shape = GradientDrawable.OVAL
++                setColor(0x99000000.toInt())
++                setStroke(dp(1), 0x66FFFFFF)
++            }
++            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply {
++                marginStart = dp(4)
++                marginEnd = dp(4)
++            }
++            setOnClickListener { onClick() }
++        }
++
++    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
++
++    private fun showStatus(message: String) {
++        statusText.text = message
++        statusText.visibility = View.VISIBLE
++    }
++
++    // ---------------------------------------------------------------- Player
++
++    private fun initPlayer() {
++        if (player != null) return
++        val uri = videoUri ?: return
++
++        val renderersFactory = DefaultRenderersFactory(this)
++            .setEnableDecoderFallback(true)
++
++        val exo = ExoPlayer.Builder(this, renderersFactory)
++            .setHandleAudioBecomingNoisy(true)
++            .build()
++        player = exo
++        playerView.player = exo
++
++        val item = MediaItem.Builder()
++            .setUri(uri)
++            .setSubtitleConfigurations(findSidecarSubtitles(videoPath))
++            .build()
++
++        exo.addListener(object : Player.Listener {
++            override fun onTracksChanged(tracks: Tracks) {
++                checkForUnsupportedTracks(tracks)
++            }
++
++            override fun onPlayerError(error: PlaybackException) {
++                showStatus(getString(R.string.video_error_generic, error.errorCodeName))
++            }
++
++            override fun onPlaybackStateChanged(playbackState: Int) {
++                if (playbackState == Player.STATE_READY) {
++                    statusText.visibility = View.GONE
++                }
++            }
++        })
++
++        val start = restorePosition()
++        if (start > 0) {
++            exo.setMediaItem(item, start)
++        } else {
++            exo.setMediaItem(item)
++        }
++        exo.playWhenReady = true
++        exo.prepare()
++    }
++
++    private fun releasePlayer() {
++        player?.release()
++        player = null
++        if (::playerView.isInitialized) playerView.player = null
++    }
++
++    /**
++     * If the file has a video (or audio) track but this watch has no decoder for it, tell the user
++     * exactly what is wrong instead of showing a black screen.
++     */
++    private fun checkForUnsupportedTracks(tracks: Tracks) {
++        if (codecWarningShown) return
++
++        val videoGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
++        val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
++
++        if (videoGroups.isNotEmpty() && videoGroups.none { it.isSupported() }) {
++            codecWarningShown = true
++            val mime = videoGroups.first().getTrackFormat(0).sampleMimeType ?: "?"
++            showStatus(getString(R.string.video_unsupported_video, mime))
++        } else if (audioGroups.isNotEmpty() && audioGroups.none { it.isSupported() }) {
++            codecWarningShown = true
++            val mime = audioGroups.first().getTrackFormat(0).sampleMimeType ?: "?"
++            Toast.makeText(
++                this,
++                getString(R.string.video_unsupported_audio, mime),
++                Toast.LENGTH_LONG
++            ).show()
++        }
++    }
++
++    // ---------------------------------------------------------------- Subtitles / audio
++
++    private fun cycleSubtitles() {
++        val p = player ?: return
++        val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT && it.isSupported() }
++        if (groups.isEmpty()) {
++            Toast.makeText(this, R.string.video_subtitles_none, Toast.LENGTH_SHORT).show()
++            return
++        }
++
++        // -1 (none selected) -> 0 -> 1 ... -> last -> off
++        val currentIndex = groups.indexOfFirst { it.isSelected() }
++        val nextIndex = currentIndex + 1
++        val params = p.trackSelectionParameters.buildUpon()
++
++        if (nextIndex >= groups.size) {
++            params.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
++            Toast.makeText(this, R.string.video_subtitles_off, Toast.LENGTH_SHORT).show()
++        } else {
++            val group = groups[nextIndex]
++            params.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
++            params.setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
++            Toast.makeText(
++                this,
++                "CC: " + trackName(group.getTrackFormat(0), nextIndex),
++                Toast.LENGTH_SHORT
++            ).show()
++        }
++        p.trackSelectionParameters = params.build()
++    }
++
++    private fun cycleAudio() {
++        val p = player ?: return
++        val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO && it.isSupported() }
++        if (groups.size < 2) return
++
++        val currentIndex = groups.indexOfFirst { it.isSelected() }
++        val nextIndex = (currentIndex + 1) % groups.size
++        val group = groups[nextIndex]
++
++        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
++            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
++            .build()
++
++        Toast.makeText(
++            this,
++            getString(R.string.video_audio_track, trackName(group.getTrackFormat(0), nextIndex)),
++            Toast.LENGTH_SHORT
++        ).show()
++    }
++
++    private fun trackName(format: Format, index: Int): String {
++        format.label?.takeIf { it.isNotBlank() }?.let { return it }
++        format.language?.takeIf { it.isNotBlank() && it != "und" }?.let {
++            val name = Locale.forLanguageTag(it).displayLanguage
++            if (name.isNotBlank()) return name
++        }
++        return getString(R.string.video_track_default, index + 1)
++    }
++
++    /** Finds "Movie.srt", "Movie.en.srt", "Movie.vtt", "Movie.ass" next to "Movie.mkv". */
++    private fun findSidecarSubtitles(path: String?): List<MediaItem.SubtitleConfiguration> {
++        if (path.isNullOrEmpty()) return emptyList()
++        val video = File(path)
++        val dir = video.parentFile ?: return emptyList()
++        val base = video.nameWithoutExtension
++
++        val files = try {
++            dir.listFiles()
++        } catch (_: SecurityException) {
++            null
++        } ?: return emptyList()
++
++        return files
++            .filter { it.isFile && it.name.startsWith(base, ignoreCase = true) && it.extension.lowercase() in SUBTITLE_EXTENSIONS }
++            .sortedBy { it.name }
++            .mapIndexed { index, file ->
++                val ext = file.extension.lowercase()
++                val mime = when (ext) {
++                    "srt" -> MimeTypes.APPLICATION_SUBRIP
++                    "vtt" -> MimeTypes.TEXT_VTT
++                    else -> MimeTypes.TEXT_SSA
++                }
++                val label = file.nameWithoutExtension
++                    .removePrefix(base)
++                    .trim('.', '_', '-', ' ')
++                    .ifEmpty { ext.uppercase() }
++                MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(file))
++                    .setMimeType(mime)
++                    .setLabel(label)
++                    .setSelectionFlags(if (index == 0) C.SELECTION_FLAG_DEFAULT else 0)
++                    .build()
++            }
++    }
++
++    // ---------------------------------------------------------------- Resume position
++
++    private fun savePosition() {
++        val p = player ?: return
++        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
++        val duration = p.duration
++        val position = p.currentPosition
++        if (duration != C.TIME_UNSET && position > 5_000 && position < duration - 10_000) {
++            prefs.edit().putLong(sourceKey, position).apply()
++        } else {
++            prefs.edit().remove(sourceKey).apply()
++        }
++    }
++
++    private fun restorePosition(): Long =
++        getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(sourceKey, 0L)
++
++    companion object {
++        const val EXTRA_PATH = "com.dertefter.wearfiles.extra.VIDEO_PATH"
++        private const val PREFS = "video_positions"
++        private val SUBTITLE_EXTENSIONS = setOf("srt", "vtt", "ass", "ssa")
++    }
++}
+diff --git a/wearable/src/main/java/com/dertefter/wearfiles/data/FileInteractionHandlerImpl.kt b/wearable/src/main/java/com/dertefter/wearfiles/data/FileInteractionHandlerImpl.kt
+index 0e3c384..f400f30 100644
+--- a/wearable/src/main/java/com/dertefter/wearfiles/data/FileInteractionHandlerImpl.kt
++++ b/wearable/src/main/java/com/dertefter/wearfiles/data/FileInteractionHandlerImpl.kt
+@@ -7,6 +7,7 @@ import android.net.Uri
+ import android.widget.Toast
+ import androidx.core.content.FileProvider
+ import com.dertefter.wearable.data.repository.FileInteractionHandler
++import com.dertefter.wearfiles.common.viewers.VideoPlayerActivity
+ import dagger.hilt.android.qualifiers.ApplicationContext
+ import java.io.File
+ import javax.inject.Inject
+@@ -27,6 +28,10 @@ class FileInteractionHandlerImpl @Inject constructor(
+ 
+         val mimeType = context.contentResolver.getType(uri) ?: "*/*"
+ 
++        // Videos (mkv, webm, mp4...) play in our built-in ExoPlayer screen instead of
++        // asking the system for an app, because Wear OS has no system app for most formats.
++        if (isVideo(file.name, mimeType) && openVideo(uri, path)) return
++
+         val intent = Intent(Intent.ACTION_VIEW).apply {
+             setDataAndType(uri, mimeType)
+             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+@@ -42,6 +47,8 @@ class FileInteractionHandlerImpl @Inject constructor(
+ 
+     override fun openFileByUri(uri: Uri) {
+         val mime = context.contentResolver.getType(uri) ?: "*/*"
++        if (isVideo(uri.lastPathSegment, mime) && openVideo(uri, null)) return
++
+         val intent = Intent(Intent.ACTION_VIEW).apply {
+             setDataAndType(uri, mime)
+             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+@@ -51,4 +58,33 @@ class FileInteractionHandlerImpl @Inject constructor(
+         } catch (_: ActivityNotFoundException) {
+         }
+     }
++
++    private fun isVideo(name: String?, mimeType: String?): Boolean {
++        if (mimeType?.startsWith("video/") == true) return true
++        val extension = (name?.substringAfterLast('.', "") ?: "").lowercase()
++        return extension in VIDEO_EXTENSIONS
++    }
++
++    private fun openVideo(uri: Uri, path: String?): Boolean {
++        val intent = Intent(context, VideoPlayerActivity::class.java).apply {
++            action = Intent.ACTION_VIEW
++            data = uri
++            if (path != null) putExtra(VideoPlayerActivity.EXTRA_PATH, path)
++            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
++            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
++        }
++        return try {
++            context.startActivity(intent)
++            true
++        } catch (_: ActivityNotFoundException) {
++            false
++        }
++    }
++
++    private companion object {
++        val VIDEO_EXTENSIONS = setOf(
++            "mkv", "mp4", "m4v", "webm", "avi", "mov", "3gp", "3g2",
++            "ts", "m2ts", "flv", "wmv", "mpg", "mpeg", "ogv"
++        )
++    }
+ }
+diff --git a/wearable/src/main/res/values-ru/strings.xml b/wearable/src/main/res/values-ru/strings.xml
+index 8246590..5ce4faf 100644
+--- a/wearable/src/main/res/values-ru/strings.xml
++++ b/wearable/src/main/res/values-ru/strings.xml
+@@ -7,4 +7,12 @@
+     <string name="notification_channel_name">Передача файлов</string>
+     <string name="notification_receiving_title">Получение файла</string>
+     <string name="notification_receiving_desc">%1$s (%2$d%%)</string>
++    <string name="launch_video_player">Воспроизвести видео</string>
++    <string name="video_subtitles_off">Субтитры: выкл</string>
++    <string name="video_subtitles_none">В видео нет субтитров</string>
++    <string name="video_audio_track">Звук: %1$s</string>
++    <string name="video_track_default">Дорожка %1$d</string>
++    <string name="video_unsupported_video">Часы не могут декодировать видео (%1$s). Конвертируйте в H.264 MP4.</string>
++    <string name="video_unsupported_audio">Часы не могут декодировать звук (%1$s). Конвертируйте в AAC.</string>
++    <string name="video_error_generic">Ошибка воспроизведения: %1$s</string>
+ </resources>
+\ No newline at end of file
+diff --git a/wearable/src/main/res/values-zh-rCN/strings.xml b/wearable/src/main/res/values-zh-rCN/strings.xml
+index e9fda91..b16a516 100644
+--- a/wearable/src/main/res/values-zh-rCN/strings.xml
++++ b/wearable/src/main/res/values-zh-rCN/strings.xml
+@@ -7,4 +7,12 @@
+     <string name="notification_channel_name">文件传输</string>
+     <string name="notification_receiving_title">正在接收文件</string>
+     <string name="notification_receiving_desc">%1$s (%2$d%%)</string>
++    <string name="launch_video_player">播放视频</string>
++    <string name="video_subtitles_off">字幕:关</string>
++    <string name="video_subtitles_none">此视频没有字幕</string>
++    <string name="video_audio_track">音频:%1$s</string>
++    <string name="video_track_default">音轨 %1$d</string>
++    <string name="video_unsupported_video">手表无法解码此视频(%1$s)。请转换为 H.264 MP4。</string>
++    <string name="video_unsupported_audio">手表无法解码此音频(%1$s)。请转换为 AAC。</string>
++    <string name="video_error_generic">播放错误:%1$s</string>
+ </resources>
+\ No newline at end of file
+diff --git a/wearable/src/main/res/values/strings.xml b/wearable/src/main/res/values/strings.xml
+index 6da7c07..9f34d92 100644
+--- a/wearable/src/main/res/values/strings.xml
++++ b/wearable/src/main/res/values/strings.xml
+@@ -8,4 +8,12 @@
+     <string name="notification_channel_name">File Transfer</string>
+     <string name="notification_receiving_title">Receiving file</string>
+     <string name="notification_receiving_desc">%1$s (%2$d%%)</string>
++    <string name="launch_video_player">Play video</string>
++    <string name="video_subtitles_off">Subtitles: off</string>
++    <string name="video_subtitles_none">No subtitles in this video</string>
++    <string name="video_audio_track">Audio: %1$s</string>
++    <string name="video_track_default">Track %1$d</string>
++    <string name="video_unsupported_video">This watch cannot decode the video (%1$s). Convert it to H.264 MP4.</string>
++    <string name="video_unsupported_audio">This watch cannot decode the audio (%1$s). Convert it to AAC.</string>
++    <string name="video_error_generic">Playback error: %1$s</string>
+ </resources>
+\ No newline at end of file
+-- 
+2.43.0
+
