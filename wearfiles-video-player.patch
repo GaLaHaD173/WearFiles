@@ -1,4 +1,4 @@
-From dcefefa0e89cdf2165d95760adb2a7a8cbce0d2c Mon Sep 17 00:00:00 2001
+From 64f8ea462dfd61a65f72d1c44db1d8a825f7d204 Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Wed, 18 Nov 2026 19:27:03 +0000
 Subject: [PATCH] Add built-in Media3 video player (MKV/WebM, subtitles,
@@ -17,11 +17,11 @@ Subject: [PATCH] Add built-in Media3 video player (MKV/WebM, subtitles,
  create mode 100644 wearable/src/main/java/com/dertefter/wearfiles/common/viewers/VideoPlayerActivity.kt
 
 diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
-index a2b6740..2a6d51d 100644
+index e2e305b..6b136ad 100644
 --- a/gradle/libs.versions.toml
 +++ b/gradle/libs.versions.toml
 @@ -42,6 +42,9 @@ coreKtx = "1.19.1"
- lifecycleRuntimeKtx = "2.11.0"
+ lifecycleRuntimeKtx = "2.11.1"
  playServicesWearable = "20.0.1"
  
 +# Media3 (video player)
@@ -42,7 +42,7 @@ index a2b6740..2a6d51d 100644
  hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
  hilt-compiler = { module = "com.google.dagger:hilt-compiler", version.ref = "hilt" }
 diff --git a/wearable/build.gradle.kts b/wearable/build.gradle.kts
-index 00721f9..afc068c 100644
+index 8a80082..6bfd6ff 100644
 --- a/wearable/build.gradle.kts
 +++ b/wearable/build.gradle.kts
 @@ -114,5 +114,7 @@ dependencies {
