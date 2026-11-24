@@ -1,0 +1,40 @@
+name: Build APKs with video player patch
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Apply video player patch
+        run: |
+          git config user.name "builder"
+          git config user.email "builder@example.com"
+          git am wearfiles-video-player.patch
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Build debug APKs (phone + watch)
+        run: ./gradlew :mobile:assembleDebug :wearable:assembleDebug
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: wearfiles-debug-apks
+          path: |
+            mobile/build/outputs/apk/debug/*.apk
+            wearable/build/outputs/apk/debug/*.apk
