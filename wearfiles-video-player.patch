@@ -1,4 +1,4 @@
-From e5d8b37a89ecb1be895da640ab805220ca6450b2 Mon Sep 17 00:00:00 2001
+From f9372e017e8d68a90914be1f8e09b2cacee1f721 Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Wed, 18 Nov 2026 19:27:03 +0000
 Subject: [PATCH] Add built-in Media3 video player (MKV/WebM, subtitles,
@@ -1027,7 +1027,7 @@ index 8246c44..9e2b0ca 100644
              val targetFile = uniqueTargetFile(receivedDir, fileName)
 diff --git a/wearable/src/main/java/com/dertefter/wearfiles/common/viewers/VideoPlayerActivity.kt b/wearable/src/main/java/com/dertefter/wearfiles/common/viewers/VideoPlayerActivity.kt
 new file mode 100644
-index 0000000..e6e53f0
+index 0000000..b2f84a0
 --- /dev/null
 +++ b/wearable/src/main/java/com/dertefter/wearfiles/common/viewers/VideoPlayerActivity.kt
 @@ -0,0 +1,582 @@
@@ -1080,25 +1080,25 @@ index 0000000..e6e53f0
 +
 +    private var player: ExoPlayer? = null
 +    private lateinit var playerView: PlayerView
-+    private lateinit var overlay: FrameLayout
++    private lateinit var controlsLayer: FrameLayout
 +    private lateinit var playPauseButton: ImageView
 +    private lateinit var seekBar: SeekBar
 +    private lateinit var timeText: TextView
 +    private lateinit var statusText: TextView
 +    private lateinit var infoText: TextView
 +
-+    private val handler = Handler(Looper.getMainLooper())
++    private val uiHandler = Handler(Looper.getMainLooper())
 +    private var userSeeking = false
 +    private var firstFrameRendered = false
 +    private var hasVideoTrack = false
 +    private var lastInfo = ""
 +
-+    private val hideOverlayRunnable = Runnable { overlay.visibility = View.GONE }
++    private val hideOverlayRunnable = Runnable { controlsLayer.visibility = View.GONE }
 +    private val hideInfoRunnable = Runnable { infoText.visibility = View.GONE }
 +    private val progressRunnable = object : Runnable {
 +        override fun run() {
 +            updateProgress()
-+            handler.postDelayed(this, 500)
++            uiHandler.postDelayed(this, 500)
 +        }
 +    }
 +    private val firstFrameCheck = Runnable {
@@ -1162,12 +1162,12 @@ index 0000000..e6e53f0
 +        val tapLayer = View(this).apply { setOnClickListener { toggleOverlay() } }
 +        root.addView(tapLayer, FrameLayout.LayoutParams(match, match))
 +
-+        overlay = FrameLayout(this).apply { visibility = View.GONE }
++        controlsLayer = FrameLayout(this).apply { visibility = View.GONE }
 +        val scrim = View(this).apply {
 +            setBackgroundColor(0x99000000.toInt())
-+            setOnClickListener { overlay.visibility = View.GONE }
++            setOnClickListener { controlsLayer.visibility = View.GONE }
 +        }
-+        overlay.addView(scrim, FrameLayout.LayoutParams(match, match))
++        controlsLayer.addView(scrim, FrameLayout.LayoutParams(match, match))
 +
 +        val ccButton = makeButton("CC", 34, 12f) { cycleSubtitles() }
 +        val audioButton = makeButton("\u266A", 34, 14f) { cycleAudio() }
@@ -1203,7 +1203,7 @@ index 0000000..e6e53f0
 +
 +                override fun onStartTrackingTouch(sb: SeekBar?) {
 +                    userSeeking = true
-+                    handler.removeCallbacks(hideOverlayRunnable)
++                    uiHandler.removeCallbacks(hideOverlayRunnable)
 +                }
 +
 +                override fun onStopTrackingTouch(sb: SeekBar?) {
@@ -1239,8 +1239,8 @@ index 0000000..e6e53f0
 +            LinearLayout.LayoutParams(dp(120), dp(28)).apply { topMargin = dp(4) }
 +        )
 +        column.addView(timeText, LinearLayout.LayoutParams(wrap, wrap))
-+        overlay.addView(column, FrameLayout.LayoutParams(wrap, wrap, Gravity.CENTER))
-+        root.addView(overlay, FrameLayout.LayoutParams(match, match))
++        controlsLayer.addView(column, FrameLayout.LayoutParams(wrap, wrap, Gravity.CENTER))
++        root.addView(controlsLayer, FrameLayout.LayoutParams(match, match))
 +
 +        // Small codec info line, shown for a few seconds when the video opens
 +        infoText = TextView(this).apply {
@@ -1307,20 +1307,20 @@ index 0000000..e6e53f0
 +    }
 +
 +    private fun toggleOverlay() {
-+        if (overlay.visibility == View.VISIBLE) {
-+            handler.removeCallbacks(hideOverlayRunnable)
-+            overlay.visibility = View.GONE
++        if (controlsLayer.visibility == View.VISIBLE) {
++            uiHandler.removeCallbacks(hideOverlayRunnable)
++            controlsLayer.visibility = View.GONE
 +        } else {
-+            overlay.visibility = View.VISIBLE
++            controlsLayer.visibility = View.VISIBLE
 +            updateProgress()
 +            scheduleHide()
 +        }
 +    }
 +
 +    private fun scheduleHide() {
-+        handler.removeCallbacks(hideOverlayRunnable)
++        uiHandler.removeCallbacks(hideOverlayRunnable)
 +        if (player?.isPlaying == true && !userSeeking) {
-+            handler.postDelayed(hideOverlayRunnable, 4000)
++            uiHandler.postDelayed(hideOverlayRunnable, 4000)
 +        }
 +    }
 +
@@ -1395,14 +1395,14 @@ index 0000000..e6e53f0
 +                lastInfo = describeTracks(tracks)
 +                infoText.text = lastInfo
 +                infoText.visibility = View.VISIBLE
-+                handler.removeCallbacks(hideInfoRunnable)
-+                handler.postDelayed(hideInfoRunnable, 8000)
++                uiHandler.removeCallbacks(hideInfoRunnable)
++                uiHandler.postDelayed(hideInfoRunnable, 8000)
 +                checkForUnsupportedTracks(tracks)
 +            }
 +
 +            override fun onRenderedFirstFrame() {
 +                firstFrameRendered = true
-+                handler.removeCallbacks(firstFrameCheck)
++                uiHandler.removeCallbacks(firstFrameCheck)
 +                statusText.visibility = View.GONE
 +            }
 +
@@ -1423,11 +1423,11 @@ index 0000000..e6e53f0
 +            override fun onPlaybackStateChanged(playbackState: Int) {
 +                if (playbackState == Player.STATE_READY) {
 +                    if (!firstFrameRendered) {
-+                        handler.removeCallbacks(firstFrameCheck)
-+                        handler.postDelayed(firstFrameCheck, 4000)
++                        uiHandler.removeCallbacks(firstFrameCheck)
++                        uiHandler.postDelayed(firstFrameCheck, 4000)
 +                    }
 +                } else if (playbackState == Player.STATE_ENDED) {
-+                    overlay.visibility = View.VISIBLE
++                    controlsLayer.visibility = View.VISIBLE
 +                }
 +            }
 +        })
@@ -1440,11 +1440,11 @@ index 0000000..e6e53f0
 +        }
 +        exo.playWhenReady = true
 +        exo.prepare()
-+        handler.post(progressRunnable)
++        uiHandler.post(progressRunnable)
 +    }
 +
 +    private fun releasePlayer() {
-+        handler.removeCallbacksAndMessages(null)
++        uiHandler.removeCallbacksAndMessages(null)
 +        player?.release()
 +        player = null
 +        if (::playerView.isInitialized) playerView.player = null
