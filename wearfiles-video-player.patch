@@ -1,4 +1,4 @@
-From f9372e017e8d68a90914be1f8e09b2cacee1f721 Mon Sep 17 00:00:00 2001
+From 9b553dc625413fbbc7061b1795f111e583cbac3e Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Wed, 18 Nov 2026 19:27:03 +0000
 Subject: [PATCH] Add built-in Media3 video player (MKV/WebM, subtitles,
@@ -10,9 +10,9 @@ Subject: [PATCH] Add built-in Media3 video player (MKV/WebM, subtitles,
  mobile/src/debug/res/values/strings.xml       |   4 +
  .../wearfiles/FileTransferService.kt          |  86 ++-
  .../com/dertefter/wearfiles/MainActivity.kt   |   3 +
- .../wearfiles/data/MkvSubtitleExtractor.kt    | 350 +++++++++++
+ .../wearfiles/data/MkvSubtitleExtractor.kt    | 350 ++++++++++
  .../wearfiles/data/TransferModels.kt          |   3 +-
- .../wearfiles/data/VideoConversion.kt         | 209 +++++++
+ .../wearfiles/data/VideoConversion.kt         | 209 ++++++
  .../presentation/ConversionPresetRow.kt       |  56 ++
  .../wearfiles/presentation/TransferItem.kt    |   2 +-
  mobile/src/main/res/values-ru/strings.xml     |   6 +
@@ -21,13 +21,13 @@ Subject: [PATCH] Add built-in Media3 video player (MKV/WebM, subtitles,
  wearable/src/debug/res/values/strings.xml     |   4 +
  wearable/src/main/AndroidManifest.xml         |  19 +
  .../dertefter/wearfiles/FileReceiveService.kt |   2 +
- .../common/viewers/VideoPlayerActivity.kt     | 582 ++++++++++++++++++
+ .../common/viewers/VideoPlayerActivity.kt     | 603 ++++++++++++++++++
  .../data/FileInteractionHandlerImpl.kt        |  36 ++
  .../data/FileManagerRepositoryImpl.kt         |  17 +-
  wearable/src/main/res/values-ru/strings.xml   |   9 +
  .../src/main/res/values-zh-rCN/strings.xml    |   9 +
  wearable/src/main/res/values/strings.xml      |   9 +
- 22 files changed, 1419 insertions(+), 12 deletions(-)
+ 22 files changed, 1440 insertions(+), 12 deletions(-)
  create mode 100644 mobile/src/debug/res/values/strings.xml
  create mode 100644 mobile/src/main/java/com/dertefter/wearfiles/data/MkvSubtitleExtractor.kt
  create mode 100644 mobile/src/main/java/com/dertefter/wearfiles/data/VideoConversion.kt
@@ -1027,10 +1027,10 @@ index 8246c44..9e2b0ca 100644
              val targetFile = uniqueTargetFile(receivedDir, fileName)
 diff --git a/wearable/src/main/java/com/dertefter/wearfiles/common/viewers/VideoPlayerActivity.kt b/wearable/src/main/java/com/dertefter/wearfiles/common/viewers/VideoPlayerActivity.kt
 new file mode 100644
-index 0000000..b2f84a0
+index 0000000..ff307eb
 --- /dev/null
 +++ b/wearable/src/main/java/com/dertefter/wearfiles/common/viewers/VideoPlayerActivity.kt
-@@ -0,0 +1,582 @@
+@@ -0,0 +1,603 @@
 +package com.dertefter.wearfiles.common.viewers
 +
 +import android.content.Context
@@ -1085,6 +1085,8 @@ index 0000000..b2f84a0
 +    private lateinit var seekBar: SeekBar
 +    private lateinit var timeText: TextView
 +    private lateinit var statusText: TextView
++    private lateinit var fitButton: TextView
++    private var zoomToFill = true
 +    private lateinit var infoText: TextView
 +
 +    private val uiHandler = Handler(Looper.getMainLooper())
@@ -1124,6 +1126,9 @@ index 0000000..b2f84a0
 +        videoPath = intent.getStringExtra(EXTRA_PATH)
 +        sourceKey = videoPath ?: uri.toString()
 +
++        zoomToFill = getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
++            .getBoolean(KEY_ZOOM, true)
++
 +        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 +        setContentView(buildLayout())
 +    }
@@ -1153,7 +1158,8 @@ index 0000000..b2f84a0
 +        // The video itself. We draw our own controls, sized for a small round screen.
 +        playerView = PlayerView(this).apply {
 +            useController = false
-+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
++            resizeMode = if (zoomToFill) AspectRatioFrameLayout.RESIZE_MODE_ZOOM
++            else AspectRatioFrameLayout.RESIZE_MODE_FIT
 +            subtitleView?.setFractionalTextSize(0.065f)
 +        }
 +        root.addView(playerView, FrameLayout.LayoutParams(match, match))
@@ -1229,7 +1235,8 @@ index 0000000..b2f84a0
 +            orientation = LinearLayout.VERTICAL
 +            gravity = Gravity.CENTER_HORIZONTAL
 +        }
-+        column.addView(row(ccButton, audioButton))
++        fitButton = makeButton(fitLabel(), 32, 9f) { toggleZoom() }
++        column.addView(row(ccButton, audioButton, fitButton))
 +        column.addView(
 +            row(backButton, playPauseButton, forwardButton),
 +            LinearLayout.LayoutParams(wrap, wrap).apply { topMargin = dp(6) }
@@ -1322,6 +1329,18 @@ index 0000000..b2f84a0
 +        if (player?.isPlaying == true && !userSeeking) {
 +            uiHandler.postDelayed(hideOverlayRunnable, 4000)
 +        }
++    }
++
++    private fun fitLabel(): String = if (zoomToFill) "FIT" else "FILL"
++
++    /** Switches between filling the whole screen (crops the edges) and showing the full picture. */
++    private fun toggleZoom() {
++        zoomToFill = !zoomToFill
++        playerView.resizeMode = if (zoomToFill) AspectRatioFrameLayout.RESIZE_MODE_ZOOM
++        else AspectRatioFrameLayout.RESIZE_MODE_FIT
++        fitButton.text = fitLabel()
++        getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
++            .edit().putBoolean(KEY_ZOOM, zoomToFill).apply()
 +    }
 +
 +    private fun togglePlay() {
@@ -1610,6 +1629,8 @@ index 0000000..b2f84a0
 +    companion object {
 +        const val EXTRA_PATH = "com.dertefter.wearfiles.extra.VIDEO_PATH"
 +        private const val PREFS = "video_positions"
++        private const val SETTINGS_PREFS = "video_player_settings"
++        private const val KEY_ZOOM = "zoom_to_fill"
 +        private val SUBTITLE_EXTENSIONS = setOf("srt", "vtt", "ass", "ssa")
 +    }
 +}
